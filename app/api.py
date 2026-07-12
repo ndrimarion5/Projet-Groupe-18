@@ -1,5 +1,5 @@
 """API EcoSort-Search : classification d'images et recherche de produits."""
-
+from app.scraper import search_products
 from pathlib import Path
 
 import numpy as np
@@ -55,3 +55,11 @@ async def classify(file: UploadFile = File(...)):
         "classe": classe_predite,
         "confiance": round(confiance, 4),
     }
+@app.get("/search")
+def search(q: str, max_results: int = 5):
+    """Recherche des produits sur Jumia à partir d'un mot-clé."""
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="Le paramètre 'q' ne peut pas être vide.")
+
+    resultats = search_products(q, max_results=max_results)
+    return {"query": q, "resultats": resultats}
