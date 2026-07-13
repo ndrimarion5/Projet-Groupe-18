@@ -36,6 +36,7 @@ def extraire_produits_depuis_html(html: str, max_results: int = 5):
             "prix": prix_element.get_text(strip=True) if prix_element else None,
             "lien": (BASE_URL + lien) if lien and lien.startswith("/") else lien,
             "image": image_element.get("data-src") if image_element else None,
+            "categorie": carte.get("data-ga4-item_category", ""),
         }
         resultats.append(produit)
 

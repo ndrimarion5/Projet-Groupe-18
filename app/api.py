@@ -1,7 +1,6 @@
 """API EcoSort-Search : classification d'images et recherche de produits."""
 
 import io
-from app.mapping import determiner_poubelle
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +9,7 @@ from PIL import Image
 from tensorflow.keras.models import load_model
 
 from app.cache import SimpleCache
+from app.mapping import determiner_poubelle
 from app.scraper import search_products
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -39,20 +39,20 @@ def racine():
 
 
 @app.post("/classify")
-async def classify(file: UploadFile = File(...), titre_produit: str = ""):
-    """Reçoit une image (et optionnellement le titre du produit), retourne la poubelle."""
+async def classify(file: UploadFile = File(...), titre_produit: str = "", categorie: str = ""):
+    """Reçoit une image (et optionnellement le titre/categorie du produit), retourne la poubelle."""
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Le fichier doit être une image.")
 
     # Vérification D3E en premier : le modèle ne connaît pas l'électronique
-    if titre_produit and determiner_poubelle(titre_produit)["poubelle"] == "D3E":
-        resultat = determiner_poubelle(titre_produit)
+    resultat_preliminaire = determiner_poubelle(titre_produit, categorie=categorie)
+    if resultat_preliminaire["poubelle"] == "D3E":
         return {
             "classe": None,
             "confiance": None,
-            "poubelle": resultat["poubelle"],
-            "couleur": resultat["couleur"],
-            "methode": "mots-cles-titre",
+            "poubelle": resultat_preliminaire["poubelle"],
+            "couleur": resultat_preliminaire["couleur"],
+            "methode": "categorie-ou-titre",
         }
 
     # Sinon, on passe par le modèle comme avant
@@ -68,7 +68,7 @@ async def classify(file: UploadFile = File(...), titre_produit: str = ""):
     classe_predite = CLASS_NAMES[index_predit]
     confiance = float(predictions[0][index_predit])
 
-    resultat = determiner_poubelle(titre_produit, classe_modele=classe_predite)
+    resultat = determiner_poubelle(titre_produit, classe_modele=classe_predite, categorie=categorie)
 
     return {
         "classe": classe_predite,
@@ -77,6 +77,7 @@ async def classify(file: UploadFile = File(...), titre_produit: str = ""):
         "couleur": resultat["couleur"],
         "methode": "modele-ia",
     }
+
 
 @app.get("/search")
 def search(q: str, max_results: int = 5):
