@@ -3,7 +3,7 @@
 import time
 
 import undetected_chromedriver as uc
-from selenium.webdriver.common.by import By
+from bs4 import BeautifulSoup
 from selenium.webdriver.support.ui import WebDriverWait
 
 BASE_URL = "https://www.jumia.ci"
@@ -16,10 +16,35 @@ def creer_navigateur():
     return uc.Chrome(options=options)
 
 
-def search_products(query: str, max_results: int = 5):
-    """Recherche des produits sur Jumia et retourne une liste de dictionnaires."""
-    navigateur = creer_navigateur()
+def extraire_produits_depuis_html(html: str, max_results: int = 5):
+    """Analyse un HTML de page de résultats Jumia et retourne les produits trouvés.
+
+    Fonction indépendante de Selenium : testable avec un HTML statique.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    cartes_produits = soup.select("a.core")
+
     resultats = []
+    for carte in cartes_produits[:max_results]:
+        lien = carte.get("href", "")
+        titre_element = carte.select_one("h3.name")
+        prix_element = carte.select_one("div.prc")
+        image_element = carte.select_one("img")
+
+        produit = {
+            "titre": titre_element.get_text(strip=True) if titre_element else None,
+            "prix": prix_element.get_text(strip=True) if prix_element else None,
+            "lien": (BASE_URL + lien) if lien and lien.startswith("/") else lien,
+            "image": image_element.get("data-src") if image_element else None,
+        }
+        resultats.append(produit)
+
+    return resultats
+
+
+def search_products(query: str, max_results: int = 5):
+    """Recherche des produits sur Jumia : récupère la page via Selenium, puis l'analyse."""
+    navigateur = creer_navigateur()
 
     try:
         url = f"{BASE_URL}/catalog/?q={query}"
@@ -35,39 +60,13 @@ def search_products(query: str, max_results: int = 5):
 
         time.sleep(2)
 
-        cartes_produits = navigateur.find_elements(By.CSS_SELECTOR, "a.core")
-
-        for carte in cartes_produits[:max_results]:
-            lien = carte.get_attribute("href")
-
-            try:
-                titre = carte.find_element(By.CSS_SELECTOR, "h3.name").text
-            except Exception:
-                titre = None
-
-            try:
-                prix = carte.find_element(By.CSS_SELECTOR, "div.prc").text
-            except Exception:
-                prix = None
-
-            try:
-                image = carte.find_element(By.CSS_SELECTOR, "img").get_attribute("data-src")
-            except Exception:
-                image = None
-
-            resultats.append({
-                "titre": titre,
-                "prix": prix,
-                "lien": lien,
-                "image": image,
-            })
+        html = navigateur.page_source
+        return extraire_produits_depuis_html(html, max_results=max_results)
     finally:
         try:
             navigateur.quit()
         except OSError:
             pass
-
-    return resultats
 
 
 if __name__ == "__main__":
