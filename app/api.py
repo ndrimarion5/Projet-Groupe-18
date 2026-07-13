@@ -1,6 +1,7 @@
 """API EcoSort-Search : classification d'images et recherche de produits."""
 
 import io
+from app.mapping import determiner_poubelle
 from pathlib import Path
 
 import numpy as np
@@ -38,11 +39,23 @@ def racine():
 
 
 @app.post("/classify")
-async def classify(file: UploadFile = File(...)):
-    """Reçoit une image, retourne la classe de déchet prédite."""
+async def classify(file: UploadFile = File(...), titre_produit: str = ""):
+    """Reçoit une image (et optionnellement le titre du produit), retourne la poubelle."""
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Le fichier doit être une image.")
 
+    # Vérification D3E en premier : le modèle ne connaît pas l'électronique
+    if titre_produit and determiner_poubelle(titre_produit)["poubelle"] == "D3E":
+        resultat = determiner_poubelle(titre_produit)
+        return {
+            "classe": None,
+            "confiance": None,
+            "poubelle": resultat["poubelle"],
+            "couleur": resultat["couleur"],
+            "methode": "mots-cles-titre",
+        }
+
+    # Sinon, on passe par le modèle comme avant
     contenu = await file.read()
     image = Image.open(io.BytesIO(contenu)).convert("RGB")
     image = image.resize((IMG_WIDTH, IMG_HEIGHT))
@@ -55,11 +68,15 @@ async def classify(file: UploadFile = File(...)):
     classe_predite = CLASS_NAMES[index_predit]
     confiance = float(predictions[0][index_predit])
 
+    resultat = determiner_poubelle(titre_produit, classe_modele=classe_predite)
+
     return {
         "classe": classe_predite,
         "confiance": round(confiance, 4),
+        "poubelle": resultat["poubelle"],
+        "couleur": resultat["couleur"],
+        "methode": "modele-ia",
     }
-
 
 @app.get("/search")
 def search(q: str, max_results: int = 5):
