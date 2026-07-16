@@ -1,11 +1,16 @@
 """EcoSort-Search : interface Streamlit pour la recherche et le tri de produits."""
 
 import requests
+import base64
 import streamlit as st
 
 API_URL = "http://127.0.0.1:8000"
 
+
+
 st.set_page_config(page_title="EcoSort-Search", layout="centered")
+
+
 
 # --- Styles globaux ---
 st.markdown(
@@ -22,41 +27,75 @@ st.markdown(
             font-size: 1.05rem;
             margin-bottom: 2rem;
         }
-        .ecosort-carte {
-            background-color: #16241F;
-            border: 1px solid #23342C;
-            border-radius: 14px;
-            padding: 16px 20px;
-            margin-bottom: 14px;
+
+        /* --- Cards produits, style "fiche Jumia" --- */
+        div[data-testid="stVerticalBlockBorderWrapper"] {
+            background-color: #FFFFFF;
+            border-radius: 6px;
+            border: 1px solid rgba(0,0,0,0.08);
+            overflow: hidden;
+            transition: box-shadow 0.15s ease, transform 0.15s ease;
+        }
+        div[data-testid="stVerticalBlockBorderWrapper"]:hover {
+            box-shadow: 0 6px 18px rgba(0,0,0,0.25);
+            transform: translateY(-2px);
+        }
+        div[data-testid="stVerticalBlockBorderWrapper"] > div {
+            padding: 0 !important;
+        }
+        .ecosort-carte-image-wrap {
+            width: 100%;
+            aspect-ratio: 1 / 1;
+            background: #FFFFFF;
             display: flex;
             align-items: center;
-            gap: 18px;
+            justify-content: center;
+            padding: 10px;
         }
-        .ecosort-carte img {
-            border-radius: 8px;
+        .ecosort-carte-image {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+        .ecosort-carte-corps {
+            padding: 12px 14px 16px 14px;
         }
         .ecosort-carte-titre {
-            font-weight: 600;
-            font-size: 1rem;
-            line-height: 1.3;
+            color: #2B2B2B;
+            font-weight: 400;
+            font-size: 0.88rem;
+            line-height: 1.35;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            min-height: 2.4em;
+            margin-bottom: 6px;
         }
         .ecosort-carte-prix {
-            color: #5FBF8F;
-            font-weight: 700;
-            margin-top: 4px;
+            color: #F68B1E;
+            font-weight: 800;
+            font-size: 1.05rem;
         }
+
         div.stButton > button {
             background-color: #1B5E43;
             color: white;
             border: none;
-            border-radius: 8px;
+            border-radius: 6px;
             padding: 8px 20px;
             font-weight: 600;
+            width: 100%;
+            margin: 0 14px 14px 14px !important;
         }
         div.stButton > button:hover {
             background-color: #24805A;
             color: white;
         }
+        div[data-testid="column"] div.stButton {
+            padding: 0 14px 14px 14px;
+        }
+
         .ecosort-resultat-poubelle {
             padding: 40px;
             border-radius: 16px;
@@ -95,33 +134,53 @@ if lancer_recherche and mot_cle.strip():
         st.session_state["produits"] = reponse.json()["resultats"]
         st.session_state.pop("produit_choisi", None)
         st.session_state.pop("resultat_classification", None)
+    elif reponse.status_code == 503:
+        st.warning(
+            "Jumia demande une vérification de sécurité en ce moment. "
+            "Attendez quelques instants puis réessayez."
+        )
     else:
         st.error(f"Erreur lors de la recherche (code {reponse.status_code})")
 
-# --- Liste des produits ---
+# --- Grille des produits, style fiche produit ---
 if "produits" in st.session_state:
-    for index, produit in enumerate(st.session_state["produits"]):
-        col_carte, col_bouton = st.columns([5, 1])
+    produits = st.session_state["produits"]
+    nb_colonnes = 3
 
-        with col_carte:
-            st.markdown(
-                f"""
-                <div class="ecosort-carte">
-                    <img src="{produit['image']}" width="70" height="70">
-                    <div>
-                        <div class="ecosort-carte-titre">{produit['titre']}</div>
-                        <div class="ecosort-carte-prix">{produit['prix']}</div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+    for debut in range(0, len(produits), nb_colonnes):
+        colonnes = st.columns(nb_colonnes)
 
-        with col_bouton:
-            if st.button("Choisir", key=f"choisir_{index}"):
-                st.session_state["produit_choisi"] = produit
-                st.session_state["compteur_animation"] = st.session_state.get("compteur_animation", 0) + 1
-                st.session_state.pop("resultat_classification", None)
+        for decalage, colonne in enumerate(colonnes):
+            index = debut + decalage
+            if index >= len(produits):
+                continue
+
+            produit = produits[index]
+
+            with colonne:
+                with st.container(border=True):
+                    if produit.get("image_base64"):
+                        st.markdown(
+                            f'<div class="ecosort-carte-image-wrap">'
+                            f'<img class="ecosort-carte-image" '
+                            f'src="data:image/jpeg;base64,{produit["image_base64"]}"></div>',
+                            unsafe_allow_html=True,
+                        )
+
+                    st.markdown(
+                        f"""
+                        <div class="ecosort-carte-corps">
+                            <div class="ecosort-carte-titre">{produit["titre"]}</div>
+                            <div class="ecosort-carte-prix">{produit["prix"]}</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    if st.button("Choisir", key=f"choisir_{index}", use_container_width=True):
+                        st.session_state["produit_choisi"] = produit
+                        st.session_state["compteur_animation"] = st.session_state.get("compteur_animation", 0) + 1
+                        st.session_state.pop("resultat_classification", None)
 
 # --- Classification du produit choisi ---
 if "produit_choisi" in st.session_state:
@@ -129,8 +188,12 @@ if "produit_choisi" in st.session_state:
 
     if "resultat_classification" not in st.session_state:
         with st.spinner("Analyse en cours..."):
-            image_reponse = requests.get(produit["image"])
-            fichiers = {"file": ("produit.jpg", image_reponse.content, "image/jpeg")}
+            if not produit.get("image_base64"):
+                st.error("Aucune image disponible pour ce produit.")
+                st.stop()
+
+            octets_image = base64.b64decode(produit["image_base64"])
+            fichiers = {"file": ("produit.jpg", octets_image, "image/jpeg")}
             parametres = {
                 "titre_produit": produit["titre"],
                 "categorie": produit.get("categorie", ""),
@@ -147,7 +210,6 @@ if "produit_choisi" in st.session_state:
         couleur = resultat["couleur"]
         compteur = st.session_state.get("compteur_animation", 0)
 
-        # Animation : poubelle en haut à droite, objet qui y tombe
         st.markdown(
             f"""
             <style>
