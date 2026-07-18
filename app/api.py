@@ -10,7 +10,7 @@ from tensorflow.keras.models import load_model
 
 from app.cache import SimpleCache
 from app.mapping import determiner_poubelle
-from app.scraper import search_products
+from app.scraper import JumiaVerificationError, search_products
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 MODEL_PATH = BASE_DIR / "models" / "modele_eco_sort_finetuned.h5"
@@ -44,7 +44,6 @@ async def classify(file: UploadFile = File(...), titre_produit: str = "", catego
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Le fichier doit être une image.")
 
-    # Vérification D3E en premier : le modèle ne connaît pas l'électronique
     resultat_preliminaire = determiner_poubelle(titre_produit, categorie=categorie)
     if resultat_preliminaire["poubelle"] == "D3E":
         return {
@@ -55,7 +54,6 @@ async def classify(file: UploadFile = File(...), titre_produit: str = "", catego
             "methode": "categorie-ou-titre",
         }
 
-    # Sinon, on passe par le modèle comme avant
     contenu = await file.read()
     image = Image.open(io.BytesIO(contenu)).convert("RGB")
     image = image.resize((IMG_WIDTH, IMG_HEIGHT))
@@ -91,7 +89,11 @@ def search(q: str, max_results: int = 5):
     if resultats_en_cache is not None:
         return {"query": q, "resultats": resultats_en_cache, "source": "cache"}
 
-    resultats = search_products(q, max_results=max_results)
+    try:
+        resultats = search_products(q, max_results=max_results)
+    except JumiaVerificationError as erreur:
+        raise HTTPException(status_code=503, detail=str(erreur))
+
     cache_recherche.set(cle_cache, resultats)
 
     return {"query": q, "resultats": resultats, "source": "scraping"}
