@@ -163,10 +163,15 @@ def extraire_produits_depuis_html(html: str, max_results: int = 5):
 
     resultats = []
     liens_vus = set()
+    titres_vus = set()
     for carte in cartes_produits:
         lien_element = carte if carte.name == "a" else carte.select_one("a.core, a[href]")
         lien = _normaliser_url(lien_element.get("href", "") if lien_element else "")
         if not lien or lien in liens_vus:
+            continue
+
+        # Ignore les liens parasites vers la page de connexion (faux doublons Jumia)
+        if "/customer/account/login" in lien:
             continue
 
         titre_element = carte.select_one("h3.name, .name, h3")
@@ -181,6 +186,11 @@ def extraire_produits_depuis_html(html: str, max_results: int = 5):
         if not titre:
             continue
 
+        # Dedoublonne aussi sur le titre : un meme produit peut avoir plusieurs liens
+        titre_normalise = titre.strip().lower()
+        if titre_normalise in titres_vus:
+            continue
+
         produit = {
             "titre": titre,
             "prix": prix_element.get_text(strip=True) if prix_element else None,
@@ -192,13 +202,13 @@ def extraire_produits_depuis_html(html: str, max_results: int = 5):
             ),
         }
         liens_vus.add(lien)
+        titres_vus.add(titre_normalise)
         resultats.append(produit)
 
         if len(resultats) >= max_results:
             break
 
     return resultats
-
 
 def _search_products_http(query: str, max_results: int):
     """Tente une recuperation HTTP rapide avant de lancer Chrome."""
