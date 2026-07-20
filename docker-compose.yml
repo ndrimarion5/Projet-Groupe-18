@@ -1,0 +1,10 @@
+services:
+  ecosort:
+    build: .
+    image: ecosort
+    ports:
+      - "8501:8501"
+    shm_size: "1gb"
+    environment:
+      CHROME_BIN: /usr/bin/chromium
+      CHROMEDRIVER_PATH: /usr/bin/chromedriver
