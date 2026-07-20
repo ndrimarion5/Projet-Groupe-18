@@ -1,11 +1,48 @@
 """EcoSort-Search : interface Streamlit pour la recherche et le tri de produits."""
 
+import html
+
 import requests
-import base64
 import streamlit as st
-import time
 
 API_URL = "http://127.0.0.1:8000"
+
+
+@st.cache_resource
+def get_session_http():
+    """Reutilise les connexions HTTP au lieu d'en recreer a chaque rerun."""
+    return requests.Session()
+
+
+@st.cache_data(ttl=600, max_entries=50, show_spinner=False)
+def rechercher_produits_api(mot_cle: str, max_results: int = 6):
+    reponse = get_session_http().get(
+        f"{API_URL}/search",
+        params={"q": mot_cle, "max_results": max_results},
+        timeout=60,
+    )
+    return reponse.status_code, reponse.json() if reponse.content else {}
+
+
+@st.cache_data(ttl=3600, max_entries=100, show_spinner=False)
+def telecharger_image(image_url: str):
+    reponse = get_session_http().get(image_url, timeout=20)
+    reponse.raise_for_status()
+    return reponse.content, reponse.headers.get("content-type", "image/jpeg")
+
+
+@st.cache_data(ttl=3600, max_entries=100, show_spinner=False)
+def classifier_produit(titre: str, categorie: str, image_url: str):
+    contenu_image, content_type = telecharger_image(image_url)
+    fichiers = {"file": ("produit.jpg", contenu_image, content_type)}
+    parametres = {"titre_produit": titre, "categorie": categorie}
+    reponse = get_session_http().post(
+        f"{API_URL}/classify",
+        files=fichiers,
+        params=parametres,
+        timeout=60,
+    )
+    return reponse.status_code, reponse.json() if reponse.content else {}
 
 st.set_page_config(page_title="EcoSort-Search", layout="wide")
 
@@ -511,6 +548,19 @@ st.markdown(
             div[data-testid="stVerticalBlockBorderWrapper"] div.stButton > button { font-size: 1.1rem !important; padding: 12px 20px !important; }
             .search-container { max-width: 100%; padding: 0 16px; }
         }
+
+        /* Mode plus leger pour eviter les ralentissements dans le navigateur */
+        #bg-center {
+            animation: none !important;
+            filter: brightness(0.72) !important;
+            transform: scale(1.04) !important;
+        }
+        .cloud, .flower, .butterfly, .bird, .leaf, .grass-blade {
+            animation: none !important;
+        }
+        .grass-blade {
+            display: none !important;
+        }
     </style>
 
     <!-- Éléments du fond -->
@@ -542,22 +592,6 @@ st.markdown(
     <div class="leaf leaf-2">🍃</div>
     <div class="leaf leaf-3">🍃</div>
 
-    <script>
-    (function() {
-        for (let i = 0; i < 60; i++) {
-            const blade = document.createElement('div');
-            blade.className = 'grass-blade';
-            const left = (i / 60) * 100;
-            const height = 15 + Math.random() * 35;
-            const rotation = -8 + Math.random() * 16;
-            blade.style.left = left + '%';
-            blade.style.height = height + 'px';
-            blade.style.transform = 'rotate(' + rotation + 'deg)';
-            blade.style.animationDelay = (Math.random() * 2) + 's';
-            document.body.appendChild(blade);
-        }
-    })();
-    </script>
     """,
     unsafe_allow_html=True,
 )
@@ -586,28 +620,36 @@ st.markdown(
 
 # --- Barre de recherche courte et centrée ---
 st.markdown('<div class="search-container">', unsafe_allow_html=True)
-mot_cle = st.text_input("", placeholder="Que souhaitez-vous trier ?", label_visibility="collapsed")
-lancer_recherche = st.button("Rechercher", key="search_btn")
+with st.form("formulaire_recherche", border=False):
+    mot_cle = st.text_input(
+        "Recherche",
+        placeholder="Que souhaitez-vous trier ?",
+        label_visibility="collapsed",
+    )
+    lancer_recherche = st.form_submit_button("Rechercher")
 st.markdown('</div>', unsafe_allow_html=True)
 
 # --- Logique de recherche ---
 if lancer_recherche and mot_cle.strip():
     try:
         with st.spinner("Recherche en cours..."):
-            reponse = requests.get(f"{API_URL}/search", params={"q": mot_cle, "max_results": 6}, timeout=30)
+            statut_recherche, donnees_recherche = rechercher_produits_api(mot_cle.strip(), max_results=6)
     except requests.exceptions.ConnectionError:
         st.error("Le service de recherche est momentanément indisponible. Réessayez dans un instant.")
         st.stop()
+    except requests.exceptions.Timeout:
+        st.error("La recherche prend trop de temps. Réessayez dans un instant.")
+        st.stop()
 
-    if reponse.status_code == 200:
-        st.session_state["produits"] = reponse.json()["resultats"]
+    if statut_recherche == 200:
+        st.session_state["produits"] = donnees_recherche["resultats"]
         st.session_state.pop("produit_choisi", None)
         st.session_state.pop("resultat_classification", None)
         st.session_state.pop("show_waiting", None)
-    elif reponse.status_code == 503:
+    elif statut_recherche == 503:
         st.warning("⚠️ Jumia demande une vérification de sécurité. Attendez puis réessayez.")
     else:
-        st.error(f"❌ Erreur lors de la recherche (code {reponse.status_code})")
+        st.error(f"❌ Erreur lors de la recherche (code {statut_recherche})")
 
 # --- Affichage des produits ---
 if "produits" in st.session_state:
@@ -626,25 +668,27 @@ if "produits" in st.session_state:
 
             with colonne:
                 with st.container(border=True):
-                    if produit.get("image_base64"):
+                    if produit.get("image"):
                         st.markdown(
                             f'<div class="ecosort-carte-image-wrap">'
                             f'<img class="ecosort-carte-image" '
-                            f'src="data:image/jpeg;base64,{produit["image_base64"]}"></div>',
+                            f'loading="lazy" src="{html.escape(produit["image"], quote=True)}"></div>',
                             unsafe_allow_html=True,
                         )
 
+                    titre = html.escape(produit.get("titre") or "Produit sans titre")
+                    prix = html.escape(produit.get("prix") or "Prix indisponible")
                     st.markdown(
                         f"""
                         <div class="ecosort-carte-corps">
-                            <div class="ecosort-carte-titre">{produit["titre"]}</div>
-                            <div class="ecosort-carte-prix">{produit["prix"]}</div>
+                            <div class="ecosort-carte-titre">{titre}</div>
+                            <div class="ecosort-carte-prix">{prix}</div>
                         </div>
                         """,
                         unsafe_allow_html=True,
                     )
 
-                    if st.button("Choisir", key=f"choisir_{index}", use_container_width=True):
+                    if st.button("Choisir", key=f"choisir_{index}", width="stretch"):
                         st.session_state["produit_choisi"] = produit
                         st.session_state.pop("resultat_classification", None)
                         st.session_state["show_waiting"] = True
@@ -658,11 +702,11 @@ if "produit_choisi" in st.session_state:
     st.markdown("### Produit sélectionné")
     col_img, col_info = st.columns([1, 2])
     with col_img:
-        if produit.get("image_base64"):
-            st.image(base64.b64decode(produit["image_base64"]), width=200)
+        if produit.get("image"):
+            st.image(produit["image"], width=200)
     with col_info:
-        st.markdown(f"**{produit['titre']}**")
-        st.markdown(f"*{produit['prix']}*")
+        st.markdown(f"**{produit.get('titre') or 'Produit sans titre'}**")
+        st.markdown(f"*{produit.get('prix') or 'Prix indisponible'}*")
 
     result_placeholder = st.empty()
 
@@ -673,27 +717,31 @@ if "produit_choisi" in st.session_state:
         )
 
     if "resultat_classification" not in st.session_state:
-        if not produit.get("image_base64"):
+        if not produit.get("image"):
             st.error("❌ Aucune image disponible pour ce produit.")
         else:
-            octets_image = base64.b64decode(produit["image_base64"])
-            fichiers = {"file": ("produit.jpg", octets_image, "image/jpeg")}
-            parametres = {
-                "titre_produit": produit["titre"],
-                "categorie": produit.get("categorie", ""),
-            }
             try:
-                resultat_reponse = requests.post(f"{API_URL}/classify", files=fichiers, params=parametres, timeout=30)
+                statut_classification, donnees_classification = classifier_produit(
+                    produit.get("titre") or "",
+                    produit.get("categorie", ""),
+                    produit["image"],
+                )
             except requests.exceptions.ConnectionError:
                 st.error("Le service de classification est momentanément indisponible. Réessayez dans un instant.")
                 st.stop()
+            except requests.exceptions.Timeout:
+                st.error("La classification prend trop de temps. Réessayez dans un instant.")
+                st.stop()
+            except requests.exceptions.RequestException as erreur:
+                st.error(f"Impossible de récupérer l'image du produit : {erreur}")
+                st.stop()
 
-            if resultat_reponse.status_code == 200:
-                st.session_state["resultat_classification"] = resultat_reponse.json()
+            if statut_classification == 200:
+                st.session_state["resultat_classification"] = donnees_classification
                 st.session_state["show_waiting"] = False
                 st.rerun()
             else:
-                st.error(f"❌ Erreur lors de la classification (code {resultat_reponse.status_code})")
+                st.error(f"❌ Erreur lors de la classification (code {statut_classification})")
                 st.session_state["show_waiting"] = False
 
     if "resultat_classification" in st.session_state:
@@ -723,7 +771,7 @@ if "produit_choisi" in st.session_state:
             )
 
             st.markdown(
-                f'<div style="margin-top: 40px; font-weight: 600; font-size: 1.2rem; color: #F2F5F3; text-shadow: 0 2px 8px rgba(0,0,0,0.5);">{produit["titre"]}</div>',
+                f'<div style="margin-top: 40px; font-weight: 600; font-size: 1.2rem; color: #F2F5F3; text-shadow: 0 2px 8px rgba(0,0,0,0.5);">{html.escape(produit.get("titre") or "Produit sans titre")}</div>',
                 unsafe_allow_html=True,
             )
 
@@ -741,8 +789,5 @@ if "produit_choisi" in st.session_state:
                 """,
                 unsafe_allow_html=True,
             )
-
-        time.sleep(8)
-        result_placeholder.empty()
 
 st.markdown('</div>', unsafe_allow_html=True)

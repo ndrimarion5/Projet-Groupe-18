@@ -1,8 +1,7 @@
-"""Scraper Jumia : recherche des produits à partir d'un mot-clé (via undetected-chromedriver)."""
+"""Scraper Jumia : recherche de produits via undetected-chromedriver."""
 
-import base64
-import time
 import subprocess
+from urllib.parse import quote_plus
 
 import undetected_chromedriver as uc
 from bs4 import BeautifulSoup
@@ -12,13 +11,11 @@ BASE_URL = "https://www.jumia.ci"
 
 
 class JumiaVerificationError(Exception):
-    """Levée quand Jumia affiche une page de vérification humaine (Cloudflare) au lieu des résultats."""
-
-
+    """Levee quand Jumia affiche une verification humaine au lieu des resultats."""
 
 
 def _version_chrome_installee():
-    """Détecte la version majeure de Chrome installée sur la machine (Windows)."""
+    """Detecte la version majeure de Chrome installee sur Windows, si disponible."""
     try:
         sortie = subprocess.check_output(
             r'reg query "HKEY_CURRENT_USER\Software\Google\Chrome\BLBeacon" /v version',
@@ -32,19 +29,34 @@ def _version_chrome_installee():
 
 
 def creer_navigateur():
-    """Configure et retourne une instance de Chrome indétectable par Cloudflare."""
+    """Configure et retourne un navigateur Chrome rapide pour lire la page."""
     options = uc.ChromeOptions()
     options.add_argument("--headless=new")
     options.add_argument("--window-size=1920,1080")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--blink-settings=imagesEnabled=false")
+    options.page_load_strategy = "eager"
+    options.add_experimental_option(
+        "prefs",
+        {
+            "profile.managed_default_content_settings.images": 2,
+            "profile.default_content_setting_values.notifications": 2,
+        },
+    )
 
     version_majeure = _version_chrome_installee()
-    return uc.Chrome(options=options, version_main=version_majeure)
+    if version_majeure:
+        navigateur = uc.Chrome(options=options, version_main=version_majeure)
+    else:
+        navigateur = uc.Chrome(options=options)
+    navigateur.set_page_load_timeout(20)
+    return navigateur
+
 
 def extraire_produits_depuis_html(html: str, max_results: int = 5):
-    """Analyse un HTML de page de résultats Jumia et retourne les produits trouvés.
-
-    Fonction indépendante de Selenium : testable avec un HTML statique.
-    """
+    """Analyse un HTML de resultats Jumia et retourne les produits trouves."""
     soup = BeautifulSoup(html, "html.parser")
     cartes_produits = soup.select("a.core")
 
@@ -54,12 +66,24 @@ def extraire_produits_depuis_html(html: str, max_results: int = 5):
         titre_element = carte.select_one("h3.name")
         prix_element = carte.select_one("div.prc")
         image_element = carte.select_one("img")
+        image = None
+
+        if image_element:
+            image = (
+                image_element.get("data-src")
+                or image_element.get("src")
+                or image_element.get("data-lazy-src")
+            )
+            if image and image.startswith("//"):
+                image = f"https:{image}"
+            elif image and image.startswith("/"):
+                image = f"{BASE_URL}{image}"
 
         produit = {
             "titre": titre_element.get_text(strip=True) if titre_element else None,
             "prix": prix_element.get_text(strip=True) if prix_element else None,
             "lien": (BASE_URL + lien) if lien and lien.startswith("/") else lien,
-            "image": image_element.get("data-src") if image_element else None,
+            "image": image,
             "categorie": carte.get("data-ga4-item_category", ""),
         }
         resultats.append(produit)
@@ -67,31 +91,15 @@ def extraire_produits_depuis_html(html: str, max_results: int = 5):
     return resultats
 
 
-def _attendre_image_chargee(navigateur, image_element, delai_max: int = 5) -> bool:
-    """Attend que l'image soit réellement chargée dans le navigateur (pas juste le placeholder)."""
-    try:
-        WebDriverWait(navigateur, delai_max).until(
-            lambda nav: nav.execute_script(
-                "return arguments[0].complete && arguments[0].naturalWidth > 10;",
-                image_element,
-            )
-        )
-        return True
-    except Exception:
-        return False
-
 def _fermer_popups(navigateur):
-    """Ferme ou masque les popups (cookies, newsletter, promos) qui recouvrent les produits."""
+    """Ferme ou masque les popups qui peuvent recouvrir les produits."""
     from selenium.webdriver.common.keys import Keys
 
-    # Tentative : Echap ferme souvent une modale standard
     try:
         navigateur.find_element("tag name", "body").send_keys(Keys.ESCAPE)
     except Exception:
         pass
 
-    # Filet de sécurité générique : masque tout élément flottant à l'écran
-    # (bandeaux cookies, popups newsletter, promos) qui pourrait recouvrir les produits
     navigateur.execute_script(
         """
         document.querySelectorAll('*').forEach(function(el) {
@@ -103,60 +111,43 @@ def _fermer_popups(navigateur):
         });
         """
     )
-    time.sleep(0.3)
+
+
+def _page_verification(navigateur) -> bool:
+    """Indique si Jumia affiche une verification humaine."""
+    titre = navigateur.title.lower()
+    source = navigateur.page_source.lower()
+    return (
+        "un instant" in titre
+        or "verification de securite" in source
+        or "vérification de sécurité" in source
+        or ("cloudflare" in source and "verify" in source)
+    )
+
 
 def search_products(query: str, max_results: int = 5):
-    """Recherche des produits sur Jumia : récupère la page via Selenium, puis l'analyse.
-
-    Lève JumiaVerificationError si Cloudflare bloque avec une page de vérification humaine.
-    """
+    """Recherche des produits sur Jumia, puis analyse le HTML obtenu."""
     navigateur = creer_navigateur()
 
     try:
-        url = f"{BASE_URL}/catalog/?q={query}"
+        url = f"{BASE_URL}/catalog/?q={quote_plus(query.strip())}"
         navigateur.get(url)
 
         try:
-            WebDriverWait(navigateur, 20).until(
-                lambda nav: nav.title != "Un instant…"
+            WebDriverWait(navigateur, 12).until(
+                lambda nav: _page_verification(nav)
+                or len(nav.find_elements("css selector", "a.core")) > 0
             )
         except Exception:
             pass
 
-        time.sleep(2)
-
-        # Détection explicite : Cloudflare a-t-il bloqué avec une vérification humaine ?
-        if navigateur.title == "Un instant…" or "Vérification de sécurité" in navigateur.page_source:
+        if _page_verification(navigateur):
             raise JumiaVerificationError(
-                "Jumia demande une vérification humaine (Cloudflare). Réessayez dans quelques instants."
-            )
-
-        if navigateur.title == "Un instant…" or "Vérification de sécurité" in navigateur.page_source:
-            raise JumiaVerificationError(
-                "Jumia demande une vérification humaine (Cloudflare). Réessayez dans quelques instants."
+                "Jumia demande une verification humaine (Cloudflare). Reessayez dans quelques instants."
             )
 
         _fermer_popups(navigateur)
-
-
-        html = navigateur.page_source
-        resultats = extraire_produits_depuis_html(html, max_results=max_results)
-
-        # Capture des images directement depuis le navigateur, après chargement réel
-        cartes_live = navigateur.find_elements("css selector", "a.core")[:max_results]
-        for produit, carte in zip(resultats, cartes_live):
-            try:
-                image_element = carte.find_element("css selector", "img")
-                navigateur.execute_script(
-                    "arguments[0].scrollIntoView({block: 'center'});", image_element
-                )
-                _attendre_image_chargee(navigateur, image_element)
-                image_png = image_element.screenshot_as_png
-                produit["image_base64"] = base64.b64encode(image_png).decode("utf-8")
-            except Exception:
-                produit["image_base64"] = None
-
-        return resultats
+        return extraire_produits_depuis_html(navigateur.page_source, max_results=max_results)
     finally:
         try:
             navigateur.quit()
@@ -171,9 +162,9 @@ if __name__ == "__main__":
 
     try:
         produits = search_products(mot_cle)
-        for p in produits:
-            print(f"{p['titre']} — {p['prix']}")
-            print(f"  Lien : {p['lien']}")
+        for produit in produits:
+            print(f"{produit['titre']} - {produit['prix']}")
+            print(f"  Lien : {produit['lien']}")
             print()
     except JumiaVerificationError as erreur:
-        print(f"Bloqué par Cloudflare : {erreur}")
+        print(f"Bloque par Cloudflare : {erreur}")
