@@ -642,7 +642,8 @@ if lancer_recherche and mot_cle.strip():
         st.stop()
 
     if statut_recherche == 200:
-        st.session_state["produits"] = donnees_recherche["resultats"]
+        st.session_state["produits"] = donnees_recherche.get("resultats", [])
+        st.session_state["source_recherche"] = donnees_recherche.get("source", "inconnue")
         st.session_state.pop("produit_choisi", None)
         st.session_state.pop("resultat_classification", None)
         st.session_state.pop("show_waiting", None)
@@ -655,6 +656,13 @@ if lancer_recherche and mot_cle.strip():
 if "produits" in st.session_state:
     produits = st.session_state["produits"]
     nb_colonnes = 3
+
+    if not produits:
+        st.warning(
+            "Aucun produit n'a ete trouve pour cette recherche. "
+            "Essayez un mot-cle plus simple comme bouteille, calculatrice ou cahier."
+        )
+        st.stop()
 
     for debut in range(0, len(produits), nb_colonnes):
         colonnes = st.columns(nb_colonnes)
