@@ -14,11 +14,14 @@ MAPPING_CLASSE_POUBELLE = {
 # une catégorie absente du dataset d'entraînement du modèle
 MOTS_CLES_ELECTRONIQUE = [
     "smartphone", "téléphone", "telephone", "chargeur", "écouteur",
-    "ecouteur", "casque audio", "montre connectée", "montre connectee",
-    "mixeur", "batterie", "power bank", "câble usb", "cable usb",
-    "ordinateur", "tablette", "clavier", "souris", "enceinte",
+    "ecouteur", "casque audio", "montre", "mixeur", "batterie",
+    "power bank", "câble usb", "cable usb", "ordinateur", "tablette",
+    "clavier", "souris", "enceinte", "haut-parleur", "haut parleur",
     "télévision", "television", "réfrigérateur", "refrigerateur",
     "climatiseur", "ventilateur", "rasoir électrique", "rasoir electrique",
+    "imprimante", "console", "manette", "clé usb", "cle usb",
+    "disque dur", "drone", "appareil photo", "montre connectée",
+    "montre connectee",
 ]
 
 # Grandes catégories Jumia correspondant à des appareils électroniques
