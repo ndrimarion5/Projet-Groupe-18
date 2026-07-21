@@ -1,11 +1,86 @@
 """EcoSort-Search : interface Streamlit pour la recherche et le tri de produits."""
 
 import html
+import time
 
 import requests
 import streamlit as st
 
 API_URL = "http://127.0.0.1:8000"
+
+# Duree minimale (secondes) d'affichage de la poubelle coloree avant de reveler
+# la consigne : laisse le temps de voir l'objet tomber dedans, meme si l'API repond vite.
+DUREE_MIN_ANIMATION_POUBELLE = 2.4
+
+# Consignes citoyennes affichees selon la poubelle determinee par l'API.
+# Le texte parle a l'utilisateur final, pas au developpeur.
+CONSIGNES_POUBELLE = {
+    "JAUNE": {
+        "nom": "Bac jaune",
+        "sous_titre": "Emballages recyclables",
+        "consigne": "Videz et deposez l'emballage dans le bac jaune : plastiques, "
+        "metaux et cartons d'emballage y sont recycles.",
+    },
+    "VERTE": {
+        "nom": "Bac vert",
+        "sous_titre": "Verre d'emballage",
+        "consigne": "Deposez le verre (bouteilles, bocaux, pots) dans le bac vert. "
+        "Retirez les bouchons et couvercles au prealable.",
+    },
+    "BLEUE": {
+        "nom": "Bac bleu",
+        "sous_titre": "Papiers et cartons",
+        "consigne": "Deposez les papiers propres et secs dans le bac bleu : "
+        "journaux, cahiers, livres et enveloppes.",
+    },
+    "D3E": {
+        "nom": "Point de collecte D3E",
+        "sous_titre": "Appareils electriques et electroniques",
+        "consigne": "Cet appareil ne va pas a la poubelle. Rapportez-le dans un "
+        "point de collecte D3E ou en magasin : il contient des composants a traiter.",
+    },
+    "MARRON": {
+        "nom": "Bac a ordures menageres",
+        "sous_titre": "Dechets non recyclables",
+        "consigne": "Ce produit n'est pas recyclable en l'etat. Jetez-le dans le "
+        "bac a ordures menageres classique.",
+    },
+}
+
+# Version claire de la couleur de chaque poubelle, pour le texte sur fond colore.
+TEXTE_SUR_COULEUR = {
+    "JAUNE": "#1a1400",
+    "VERTE": "#ffffff",
+    "BLEUE": "#ffffff",
+    "D3E": "#ffffff",
+    "MARRON": "#ffffff",
+}
+
+
+def scene_poubelle_html(image_produit: str, couleur: str | None = None) -> str:
+    """Construit le HTML de la poubelle animee, coloree selon la categorie une fois connue."""
+    if image_produit:
+        item_html = f'<img class="eco-bin-item" src="{html.escape(image_produit, quote=True)}" />'
+    else:
+        item_html = '<div class="eco-bin-item"></div>'
+
+    style_attr = f' style="--bin-color: {html.escape(couleur, quote=True)};"' if couleur else ""
+
+    scene = f"""<div class="eco-bin-scene"{style_attr}>
+            <div class="eco-bin-shadow"></div>
+            {item_html}
+            <div class="eco-bin-lid-wrap">
+                <div class="eco-bin-lid"></div>
+            </div>
+            <div class="eco-bin-body">
+                <div class="eco-bin-rib"></div>
+                <div class="eco-bin-rib"></div>
+                <div class="eco-bin-rib"></div>
+            </div>
+        </div>"""
+    # .strip() : une ligne vide (espaces avant le """) coupe le bloc HTML englobant
+    # en plein milieu quand cette chaine est inseree dans un autre st.markdown().
+    return scene.strip()
 
 
 @st.cache_resource
@@ -44,601 +119,409 @@ def classifier_produit(titre: str, categorie: str, image_url: str):
     )
     return reponse.status_code, reponse.json() if reponse.content else {}
 
-st.set_page_config(page_title="EcoSort-Search", layout="wide")
 
-# --- CSS STYLE PREMIUM AVEC ALIGNEMENT PARFAIT ---
+st.set_page_config(page_title="EcoSort-Search", page_icon="\u267b\ufe0f", layout="wide")
+
+# --- STYLE : sobre, sombre, centre sur le geste de tri ---
 st.markdown(
     """
     <style>
-        /* ----- TRANSPARENCE TOTALE ----- */
-        html, body, .stApp, .stApp > div, .stApp > div > div,
+        @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
+
+        /* Fond uni vert profond, sans images externes ni animations distrayantes */
+        html, body, .stApp,
         [data-testid="stAppViewContainer"], [data-testid="stMain"],
-        [data-testid="stMainBlockContainer"], [data-testid="stVerticalBlock"],
-        [data-testid="stElementContainer"], [data-testid="stBlock"],
-        .st-emotion-cache-* {
-            background: transparent !important;
-            background-color: transparent !important;
+        [data-testid="stHeader"] {
+            background: #0d1f17 !important;
         }
-        .stApp, .stMain, .stMainBlockContainer {
-            background: transparent !important;
-            background-color: transparent !important;
+        [data-testid="stAppViewContainer"] {
+            background:
+                radial-gradient(1200px 600px at 50% -10%, #16352600 0%, transparent 60%),
+                linear-gradient(180deg, #10281d 0%, #0d1f17 55%, #0a1811 100%) !important;
         }
 
-        /* ----- CONTENEUR PRINCIPAL : largeur maîtrisée et centré ----- */
-        .main-content {
-            position: relative;
-            z-index: 2;
-            max-width: 1100px;
-            margin: 0 auto;
-            padding: 20px 60px;          /* Padding latéral augmenté */
+        /* Masque le menu et le bandeau par defaut de Streamlit pour un rendu fini */
+        #MainMenu, header [data-testid="stToolbar"], footer {
+            visibility: hidden;
+        }
+        [data-testid="stHeader"] { height: 0; }
+
+        .stApp, .stApp * {
+            font-family: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
         }
 
-        /* ----- FOND DIVISÉ EN TROIS (bandes latérales larges) ----- */
-        #bg-container {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            z-index: -3;
-            display: flex;
-            flex-wrap: nowrap;
-            pointer-events: none;
-        }
-        #bg-left, #bg-right {
-            flex: 0 0 200px;
-            min-width: 160px;
-            background-size: cover;
-            background-position: center;
-            background-repeat: no-repeat;
-        }
-        #bg-center {
-            flex: 1;
-            background-size: cover;
-            background-position: center;
-            background-repeat: no-repeat;
-            background-color: #0a1f18;
-            animation: kenBurns 25s ease-in-out infinite alternate;
-            filter: blur(8px) brightness(0.7);
-            transform: scale(1.15);
-        }
-        @keyframes kenBurns {
-            0% { transform: scale(1.15); }
-            100% { transform: scale(1.28); }
+        .block-container {
+            max-width: 1080px;
+            padding-top: 2.5rem;
+            padding-bottom: 4rem;
         }
 
-        #bg-left {
-            background-image: url('https://images.unsplash.com/photo-1500382017468-9049fed747ef?w=600&q=80');
-        }
-        #bg-center {
-            background-image: url('https://static.vecteezy.com/system/resources/previews/022/715/810/large_2x/3d-rendering-green-recycle-sign-with-globe-on-background-save-the-world-and-environment-concept-generat-ai-free-photo.jpg');
-        }
-        #bg-right {
-            background-image: url('https://images.unsplash.com/photo-1518495973542-4542c06a5843?w=600&q=80');
-        }
-
-        /* Overlay pour lisibilité */
-        #overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            z-index: -2;
-            background: rgba(0, 0, 0, 0.55);
-            pointer-events: none;
-        }
-
-        /* Ciel (effet de profondeur) */
-        #sky {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 45%;
-            z-index: -1;
-            background: linear-gradient(180deg, rgba(10, 26, 42, 0.4) 0%, rgba(26, 58, 74, 0.2) 30%, rgba(42, 90, 74, 0.05) 60%, transparent 100%);
-            pointer-events: none;
-        }
-
-        /* Soleil */
-        .sun {
-            position: fixed;
-            top: 5%;
-            right: 10%;
-            width: 80px;
-            height: 80px;
-            background: radial-gradient(circle, #FFD700 0%, #FFA500 30%, transparent 70%);
-            border-radius: 50%;
-            opacity: 0.6;
-            box-shadow: 0 0 100px #FFD70020;
-            z-index: -1;
-        }
-
-        /* Nuages */
-        .cloud {
-            position: fixed;
-            background: rgba(255, 255, 255, 0.06);
-            border-radius: 100px;
-            backdrop-filter: blur(2px);
-            z-index: -1;
-            animation: floatCloud 20s ease-in-out infinite;
-        }
-        .cloud-1 { width: 200px; height: 32px; top: 8%; left: 5%; }
-        .cloud-2 { width: 150px; height: 26px; top: 16%; left: 65%; animation-duration: 25s; animation-direction: reverse; }
-        .cloud-3 { width: 180px; height: 30px; top: 4%; left: 35%; animation-duration: 18s; animation-delay: 5s; }
-        @keyframes floatCloud {
-            0%, 100% { transform: translateX(0); }
-            50% { transform: translateX(90px); }
-        }
-
-        /* Herbe */
-        .grass-blade {
-            position: fixed;
-            bottom: 0;
-            width: 2px;
-            background: linear-gradient(to top, #2a5a3a, #3a7a4a);
-            transform-origin: bottom center;
-            border-radius: 2px;
-            z-index: -1;
-            animation: sway 3s ease-in-out infinite;
-        }
-        @keyframes sway {
-            0%, 100% { transform: rotate(-5deg); }
-            50% { transform: rotate(5deg); }
-        }
-
-        /* Fleurs, papillons, oiseaux, feuilles */
-        .flower, .butterfly, .bird, .leaf {
-            position: fixed;
-            z-index: -1;
-            font-size: 22px;
-        }
-        .flower { font-size: 20px; animation: sway 3s ease-in-out infinite; }
-        .butterfly { font-size: 24px; animation: fly 14s ease-in-out infinite; }
-        .bird { font-size: 18px; animation: flyBird 18s ease-in-out infinite; }
-        .leaf { font-size: 26px; opacity: 0.3; animation: leafFloat 8s ease-in-out infinite; }
-
-        @keyframes fly {
-            0%, 100% { transform: translate(0, 0) rotate(0deg); }
-            25% { transform: translate(90px, -45px) rotate(8deg); }
-            50% { transform: translate(180px, 0) rotate(0deg); }
-            75% { transform: translate(90px, 45px) rotate(-8deg); }
-        }
-        @keyframes flyBird {
-            0%, 100% { transform: translateX(0) translateY(0); }
-            25% { transform: translateX(160px) translateY(-28px); }
-            50% { transform: translateX(320px) translateY(12px); }
-            75% { transform: translateX(160px) translateY(-18px); }
-        }
-        @keyframes leafFloat {
-            0%, 100% { transform: translate(0, 0) rotate(0deg); }
-            25% { transform: translate(35px, -22px) rotate(90deg); }
-            50% { transform: translate(70px, 0) rotate(180deg); }
-            75% { transform: translate(35px, 22px) rotate(270deg); }
-        }
-
-        .flower-1 { left: 10%; bottom: 18%; animation-delay: 0s; }
-        .flower-2 { left: 75%; bottom: 15%; animation-delay: 1.5s; }
-        .flower-3 { left: 45%; bottom: 20%; animation-delay: 0.8s; }
-        .flower-4 { left: 30%; bottom: 12%; animation-delay: 2s; }
-
-        .butterfly-1 { top: 25%; left: 15%; animation-delay: 0s; }
-        .butterfly-2 { top: 35%; left: 70%; animation-delay: 5s; }
-        .butterfly-3 { top: 20%; left: 50%; animation-delay: 9s; }
-
-        .bird-1 { top: 10%; left: 25%; animation-delay: 0s; }
-        .bird-2 { top: 18%; left: 55%; animation-delay: 6s; }
-
-        .leaf-1 { top: 15%; left: 8%; animation-delay: 0s; }
-        .leaf-2 { top: 25%; right: 12%; animation-delay: 3s; }
-        .leaf-3 { top: 10%; left: 40%; animation-delay: 6s; }
-
-        /* ----- HEADER PREMIUM ----- */
-        .ecosort-header-panel {
-            background: rgba(8, 20, 15, 0.7);
-            backdrop-filter: blur(14px);
-            -webkit-backdrop-filter: blur(14px);
-            border-radius: 24px;
-            padding: 32px 48px;
-            margin-bottom: 32px;
-            border: 1px solid rgba(255,255,255,0.08);
-            box-shadow: 0 12px 48px rgba(0,0,0,0.5);
+        /* ----- EN-TETE ----- */
+        .eco-header {
             text-align: center;
+            margin-bottom: 2.5rem;
         }
-
-        .ecosort-titre-wrapper {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 18px;
-            flex-wrap: wrap;
+        .eco-eyebrow {
+            display: inline-block;
+            color: #6fcf97;
+            font-size: 0.8rem;
+            font-weight: 600;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            margin-bottom: 0.9rem;
         }
-
-        .ecosort-icon {
-            width: 52px;
-            height: 52px;
-            fill: none;
-            stroke: #3b9eff;
-            stroke-width: 2;
-            stroke-linecap: round;
-            stroke-linejoin: round;
-            filter: drop-shadow(0 0 12px rgba(59, 158, 255, 0.2));
-        }
-
-        .ecosort-titre {
-            font-size: 3.8rem;
+        .eco-title {
+            font-size: 3.1rem;
             font-weight: 800;
+            color: #f4f9f6;
             margin: 0;
-            background: linear-gradient(135deg, #3b9eff, #1a6bb0);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            text-shadow: 0 2px 30px rgba(59, 158, 255, 0.15);
+            letter-spacing: -0.02em;
+            line-height: 1.05;
         }
-
-        .ecosort-soustitre {
-            color: #b0d4f0;
-            font-size: 1.5rem;
-            margin-top: 10px;
-            font-weight: 300;
-            letter-spacing: 1px;
-            text-shadow: 0 2px 12px rgba(0,0,0,0.3);
-        }
-        .ecosort-soustitre span {
+        .eco-title .accent { color: #6fcf97; }
+        .eco-subtitle {
+            color: #9fb8ac;
+            font-size: 1.1rem;
             font-weight: 400;
-            color: #8dc4f0;
+            margin-top: 0.75rem;
         }
 
-        /* ----- RECHERCHE COURT ET CENTRÉ (largeur réduite) ----- */
-        .search-container {
-            max-width: 380px;          /* réduit pour rester dans la zone centrale */
-            margin: 0 auto;
-            padding: 0 12px;
-        }
-
-        .stTextInput {
-            position: relative;
-        }
-        .stTextInput::before {
-            content: '';
-            position: absolute;
-            left: 16px;
-            top: 50%;
-            transform: translateY(-50%);
-            width: 22px;
-            height: 22px;
-            background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='rgba(255,255,255,0.5)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'/%3E%3C/svg%3E") no-repeat center;
-            background-size: contain;
-            pointer-events: none;
-            z-index: 1;
-        }
+        /* ----- RECHERCHE ----- */
         .stTextInput > div > div > input {
-            padding-left: 48px !important;
-            border-radius: 40px !important;
-            background: rgba(255, 255, 255, 0.08) !important;
-            backdrop-filter: blur(12px) !important;
-            border: 1px solid rgba(255,255,255,0.12) !important;
-            color: #ffffff !important;
-            font-size: 17px !important;
-            font-weight: 400 !important;
-            transition: all 0.3s ease !important;
-            box-shadow: 0 4px 24px rgba(0,0,0,0.2) !important;
-            height: 56px !important;
-            width: 100% !important;
+            border-radius: 12px !important;
+            background: #12291e !important;
+            border: 1px solid #24463500 !important;
+            border: 1px solid #234634 !important;
+            color: #f4f9f6 !important;
+            font-size: 1.05rem !important;
+            height: 54px !important;
+            padding-left: 18px !important;
         }
         .stTextInput > div > div > input::placeholder {
-            color: rgba(255,255,255,0.4) !important;
-            font-weight: 300;
-            font-size: 16px;
+            color: #6d8579 !important;
         }
         .stTextInput > div > div > input:focus {
-            background: rgba(255,255,255,0.14) !important;
-            border-color: #3b9eff !important;
-            box-shadow: 0 0 30px rgba(59, 158, 255, 0.15), 0 4px 30px rgba(0,0,0,0.25) !important;
+            border-color: #6fcf97 !important;
+            box-shadow: 0 0 0 3px rgba(111, 207, 151, 0.15) !important;
         }
 
-        /* ----- BOUTON RECHERCHE ----- */
-        .action-group {
-            display: flex;
-            align-items: center;
-            gap: 18px;
-            margin-top: 16px;
-            flex-wrap: wrap;
-            justify-content: center;
-        }
-        .action-group .stButton {
-            flex: 0 0 auto;
-        }
-        .action-group .stButton button {
-            background: linear-gradient(135deg, #3b9eff, #1a6bb0) !important;
+        div[data-testid="stForm"] {
             border: none !important;
-            border-radius: 40px !important;
-            padding: 14px 32px !important;
-            color: white !important;
-            font-weight: 600 !important;
-            font-size: 17px !important;
-            letter-spacing: 0.5px !important;
-            transition: all 0.3s ease !important;
-            box-shadow: 0 4px 24px rgba(59, 158, 255, 0.3) !important;
-            min-width: 150px !important;
+            padding: 0 !important;
         }
-        .action-group .stButton button:hover {
-            transform: translateY(-3px) !important;
-            box-shadow: 0 10px 40px rgba(59, 158, 255, 0.5) !important;
-            background: linear-gradient(135deg, #2a8aee, #155a9a) !important;
+        div[data-testid="stForm"] .stButton > button {
+            background: #6fcf97 !important;
+            color: #08130d !important;
+            border: none !important;
+            border-radius: 12px !important;
+            padding: 0.8rem 2rem !important;
+            font-weight: 700 !important;
+            font-size: 1rem !important;
+            width: 100% !important;
+            transition: background 0.2s ease, transform 0.2s ease !important;
+        }
+        div[data-testid="stForm"] .stButton > button:hover {
+            background: #5bbf85 !important;
+            transform: translateY(-1px) !important;
         }
 
-        /* ----- CARTES PRODUITS PREMIUM ----- */
+        /* ----- CARTES PRODUITS ----- */
         div[data-testid="stVerticalBlockBorderWrapper"] {
-            background: rgba(10, 20, 16, 0.75) !important;
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border-radius: 24px;
-            border: 1px solid rgba(255,255,255,0.06);
+            background: #12291e !important;
+            border: 1px solid #1f3d2d !important;
+            border-radius: 16px !important;
             overflow: hidden;
-            transition: all 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
-            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-            padding: 0 !important;
-            margin-bottom: 28px;
+            transition: border-color 0.2s ease, transform 0.2s ease;
+            margin-bottom: 1.25rem;
         }
         div[data-testid="stVerticalBlockBorderWrapper"]:hover {
-            transform: translateY(-10px) scale(1.01);
-            box-shadow: 0 16px 60px rgba(0,0,0,0.5);
-            border-color: rgba(59, 158, 255, 0.25);
+            border-color: #3f6b52 !important;
+            transform: translateY(-3px);
         }
-        div[data-testid="stVerticalBlockBorderWrapper"] > div {
-            padding: 0 !important;
-        }
+        div[data-testid="stVerticalBlockBorderWrapper"] > div { padding: 0 !important; }
 
-        .ecosort-carte-image-wrap {
+        .eco-card-image {
             width: 100%;
             aspect-ratio: 1 / 1;
-            background: rgba(255,255,255,0.03);
+            background: #ffffff;
             display: flex;
             align-items: center;
             justify-content: center;
-            padding: 20px;
+            padding: 16px;
         }
-        .ecosort-carte-image {
+        .eco-card-image img {
             max-width: 100%;
             max-height: 100%;
             object-fit: contain;
-            transition: transform 0.4s ease;
         }
-        div[data-testid="stVerticalBlockBorderWrapper"]:hover .ecosort-carte-image {
-            transform: scale(1.06);
-        }
-
-        .ecosort-carte-corps {
-            padding: 18px 20px 20px 20px;
-        }
-        .ecosort-carte-titre {
-            color: #ffffff !important;
+        .eco-card-body { padding: 16px 18px 6px 18px; }
+        .eco-card-title {
+            color: #eaf3ee;
             font-weight: 600;
-            font-size: 1.5rem !important;
-            line-height: 1.5;
+            font-size: 1rem;
+            line-height: 1.4;
             display: -webkit-box;
             -webkit-line-clamp: 2;
             -webkit-box-orient: vertical;
             overflow: hidden;
-            min-height: 4.5em;
-            margin-bottom: 12px;
-            text-shadow: 0 2px 8px rgba(0,0,0,0.5);
+            min-height: 2.8em;
+            margin-bottom: 8px;
         }
-        .ecosort-carte-prix {
-            color: #f5b342 !important;
-            font-weight: 800;
-            font-size: 2rem !important;
-            letter-spacing: -0.5px;
-            text-shadow: 0 2px 8px rgba(0,0,0,0.5);
+        .eco-card-price {
+            color: #f5b342;
+            font-weight: 700;
+            font-size: 1.35rem;
         }
 
         div[data-testid="stVerticalBlockBorderWrapper"] div.stButton > button {
-            background: linear-gradient(135deg, #1e7a4a, #145a32) !important;
-            border-radius: 40px !important;
-            padding: 16px 28px !important;
-            font-size: 1.4rem !important;
-            font-weight: 700 !important;
+            background: transparent !important;
+            color: #6fcf97 !important;
+            border: 1px solid #3f6b52 !important;
+            border-radius: 10px !important;
+            padding: 0.6rem !important;
+            font-size: 0.95rem !important;
+            font-weight: 600 !important;
             margin: 0 18px 18px 18px !important;
             width: calc(100% - 36px) !important;
-            box-shadow: 0 2px 16px rgba(20, 90, 50, 0.4) !important;
-            transition: all 0.3s ease !important;
+            transition: background 0.2s ease, color 0.2s ease !important;
         }
         div[data-testid="stVerticalBlockBorderWrapper"] div.stButton > button:hover {
-            transform: translateY(-4px) scale(1.02);
-            box-shadow: 0 8px 36px rgba(20, 90, 50, 0.6) !important;
+            background: #6fcf97 !important;
+            color: #08130d !important;
         }
 
-        /* ----- RÉSULTAT POUBELLE ----- */
-        .ecosort-resultat-poubelle {
-            padding: 48px 32px;
-            border-radius: 20px;
+        /* ----- LIEN "VOIR SUR JUMIA" (independant du tri) ----- */
+        .eco-jumia-link {
+            display: block;
             text-align: center;
-            margin-top: 16px;
-            box-shadow: 0 12px 48px rgba(0,0,0,0.4);
-            border: 1px solid rgba(255,255,255,0.08);
-            backdrop-filter: blur(6px);
+            text-decoration: none;
+            color: #f68b1e !important;
+            border: 1px solid #f68b1e;
+            border-radius: 10px;
+            padding: 0.55rem;
+            font-size: 0.9rem;
+            font-weight: 600;
+            margin: 0 18px 18px 18px;
+            transition: background 0.2s ease, color 0.2s ease;
         }
-        .ecosort-resultat-titre {
-            font-size: 2rem;
-            font-weight: 800;
-            color: #FFFFFF;
-            text-shadow: 0 2px 16px rgba(0,0,0,0.5);
-        }
-        .ecosort-resultat-detail {
-            color: rgba(255,255,255,0.9);
-            margin-top: 8px;
-            font-size: 1.2rem;
-            text-shadow: 0 1px 8px rgba(0,0,0,0.3);
+        .eco-jumia-link:hover {
+            background: #f68b1e;
+            color: #08130d !important;
         }
 
-        /* ----- MESSAGE D'ATTENTE ----- */
-        .waiting-message {
-            color: #b0d4f0;
-            font-size: 1.3rem;
-            text-align: center;
-            margin-top: 24px;
-            padding: 18px;
-            background: rgba(0,0,0,0.3);
+        /* ----- SECTION PRODUIT CHOISI ----- */
+        .eco-section-label {
+            color: #6fcf97;
+            font-size: 0.8rem;
+            font-weight: 600;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            margin: 2.5rem 0 1rem 0;
+        }
+        .eco-selected-title { color: #f4f9f6; font-size: 1.3rem; font-weight: 700; }
+        .eco-selected-price { color: #f5b342; font-size: 1.1rem; font-weight: 600; margin-top: 4px; }
+
+        /* ----- RESULTAT DE TRI ----- */
+        .eco-result {
             border-radius: 16px;
-            backdrop-filter: blur(6px);
-            border: 1px solid rgba(255,255,255,0.05);
+            padding: 2rem 2rem;
+            margin-top: 1.25rem;
+        }
+        .eco-result-badge {
+            display: inline-block;
+            font-size: 0.75rem;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            padding: 4px 12px;
+            border-radius: 999px;
+            background: rgba(0,0,0,0.18);
+            margin-bottom: 0.9rem;
+        }
+        .eco-result-title { font-size: 2rem; font-weight: 800; margin: 0; line-height: 1.1; }
+        .eco-result-subtitle { font-size: 1rem; font-weight: 600; opacity: 0.85; margin-top: 2px; }
+        .eco-result-consigne { font-size: 1.05rem; line-height: 1.5; margin-top: 1rem; opacity: 0.95; }
+        .eco-result-meta {
+            font-size: 0.8rem;
+            margin-top: 1.25rem;
+            opacity: 0.6;
         }
 
-        /* ----- ANIMATION POUBELLE ----- */
-        @keyframes sortirDuBas {
-            0%   { transform: translateY(280px); opacity: 0; }
-            70%  { transform: translateY(-18px); opacity: 1; }
-            100% { transform: translateY(0); opacity: 1; }
+        .eco-waiting {
+            color: #9fb8ac;
+            text-align: center;
+            padding: 2rem;
+            background: #12291e;
+            border: 1px solid #1f3d2d;
+            border-radius: 16px;
+            margin-top: 1.25rem;
         }
-        @keyframes tomberDansPoubelle {
-            0%   { transform: translate(-50%, -60px) rotate(0deg); opacity: 0; }
-            10%  { opacity: 1; }
-            80%  { transform: translate(-50%, 160px) rotate(360deg); opacity: 1; }
-            100% { transform: translate(-50%, 180px) rotate(360deg); opacity: 0; }
+
+        /* ----- POUBELLE ANIMEE (analyse en cours) ----- */
+        .eco-bin-waiting {
+            text-align: center;
+            padding: 2.5rem 2rem 2rem 2rem;
+            background: #12291e;
+            border: 1px solid #1f3d2d;
+            border-radius: 16px;
+            margin-top: 1.25rem;
         }
-        .ecosort-poubelle-outer {
-            position: fixed;
-            top: 50%;
-            right: 5%;
-            transform: translateY(-50%);
-            width: 250px;
-            height: 290px;
-            z-index: 9999;
-            pointer-events: none;
-            animation: sortirDuBas 0.8s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+        .eco-bin-scene {
+            position: relative;
+            width: 150px;
+            height: 150px;
+            margin: 0 auto 1.25rem auto;
         }
-        .ecosort-poubelle-anim {
+        .eco-bin-shadow {
+            position: absolute;
+            bottom: 4px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 90px;
+            height: 14px;
+            background: radial-gradient(ellipse at center, rgba(0,0,0,0.45) 0%, transparent 70%);
+            border-radius: 50%;
+        }
+        .eco-bin-scene { --bin-color: #3f6b52; }
+        .eco-bin-body {
+            position: absolute;
+            bottom: 14px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 92px;
+            height: 96px;
+            background: var(--bin-color);
+            clip-path: polygon(12% 0%, 88% 0%, 80% 100%, 20% 100%);
+            box-shadow: inset -8px 0 14px rgba(0,0,0,0.3), inset 8px 0 14px rgba(255,255,255,0.12);
+            transition: background 0.3s ease;
+            z-index: 1;
+        }
+        .eco-bin-rib {
+            position: absolute;
+            top: 14px;
+            bottom: 10px;
+            width: 2px;
+            background: rgba(0,0,0,0.2);
+        }
+        .eco-bin-rib:nth-child(1) { left: 30%; }
+        .eco-bin-rib:nth-child(2) { left: 50%; }
+        .eco-bin-rib:nth-child(3) { left: 70%; }
+        .eco-bin-lid-wrap {
+            position: absolute;
+            top: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 104px;
+            height: 18px;
+            perspective: 220px;
+            z-index: 3;
+        }
+        .eco-bin-lid {
             position: relative;
             width: 100%;
             height: 100%;
+            background: var(--bin-color);
+            filter: brightness(1.25);
+            border-radius: 8px 8px 3px 3px;
+            box-shadow: 0 3px 6px rgba(0,0,0,0.35);
+            transform-origin: 50% 100%;
+            transition: background 0.3s ease;
+            animation: eco-bin-lid-open 2.2s ease-in-out infinite;
         }
-        .ecosort-dechet {
+        .eco-bin-lid::after {
+            content: "";
             position: absolute;
-            top: -50px;
+            top: 4px;
             left: 50%;
-            width: 40px;
-            height: 40px;
-            background: linear-gradient(135deg, #E8EDEA, #C5D0CA);
+            transform: translateX(-50%);
+            width: 22px;
+            height: 5px;
+            background: rgba(8, 19, 13, 0.4);
+            border-radius: 3px;
+        }
+        .eco-bin-item {
+            position: absolute;
+            top: 6px;
+            left: 50%;
+            width: 44px;
+            height: 44px;
+            margin-left: -22px;
+            object-fit: contain;
+            background: #ffffff;
             border-radius: 8px;
-            opacity: 0;
-            animation: tomberDansPoubelle 0.9s ease-in forwards;
-            animation-delay: 0.8s;
-            box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+            padding: 4px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.35);
+            z-index: 2;
+            animation: eco-bin-item-fall 2.2s ease-in infinite;
+        }
+        .eco-waiting-text {
+            color: #9fb8ac;
+            font-size: 1rem;
+        }
+        @keyframes eco-bin-lid-open {
+            0%, 28% { transform: rotateX(0deg); }
+            42%, 60% { transform: rotateX(-68deg); }
+            78%, 100% { transform: rotateX(0deg); }
+        }
+        @keyframes eco-bin-item-fall {
+            0% { transform: translateY(-46px) scale(1); opacity: 0; }
+            12% { opacity: 1; }
+            38% { transform: translateY(2px) scale(1); opacity: 1; }
+            52% { transform: translateY(30px) scale(0.55); opacity: 1; }
+            68% { transform: translateY(42px) scale(0.15); opacity: 0; }
+            100% { transform: translateY(42px) scale(0.15); opacity: 0; }
         }
 
-        /* Responsive */
-        @media (max-width: 1024px) {
-            .main-content { max-width: 100%; padding: 20px 30px; }
-            #bg-left, #bg-right { flex: 0 0 100px; min-width: 80px; }
-            .search-container { max-width: 340px; }
-        }
+        hr { border-color: #1f3d2d !important; }
+
         @media (max-width: 768px) {
-            .main-content { max-width: 100%; padding: 12px; }
-            #bg-left, #bg-right { flex: 0 0 50px; min-width: 40px; }
-            .ecosort-titre { font-size: 2.4rem; }
-            .ecosort-header-panel { padding: 20px; }
-            .ecosort-poubelle-outer { width: 160px; height: 190px; right: 2%; }
-            .action-group { flex-direction: column; align-items: stretch; }
-            .ecosort-carte-titre { font-size: 1.2rem !important; min-height: 3.6em; }
-            .ecosort-carte-prix { font-size: 1.6rem !important; }
-            .stTextInput > div > div > input { font-size: 16px !important; height: 52px !important; }
-            .action-group .stButton button { font-size: 16px !important; padding: 12px 24px !important; }
-            div[data-testid="stVerticalBlockBorderWrapper"] div.stButton > button { font-size: 1.1rem !important; padding: 12px 20px !important; }
-            .search-container { max-width: 100%; padding: 0 16px; }
-        }
-
-        /* Mode plus leger pour eviter les ralentissements dans le navigateur */
-        #bg-center {
-            animation: none !important;
-            filter: brightness(0.72) !important;
-            transform: scale(1.04) !important;
-        }
-        .cloud, .flower, .butterfly, .bird, .leaf, .grass-blade {
-            animation: none !important;
-        }
-        .grass-blade {
-            display: none !important;
+            .eco-title { font-size: 2.2rem; }
+            .block-container { padding-top: 1.5rem; }
         }
     </style>
-
-    <!-- Éléments du fond -->
-    <div id="bg-container">
-        <div id="bg-left"></div>
-        <div id="bg-center"></div>
-        <div id="bg-right"></div>
-    </div>
-    <div id="overlay"></div>
-    <div id="sky"></div>
-    <div class="sun"></div>
-    <div class="cloud cloud-1"></div>
-    <div class="cloud cloud-2"></div>
-    <div class="cloud cloud-3"></div>
-
-    <div class="flower flower-1">🌸</div>
-    <div class="flower flower-2">🌺</div>
-    <div class="flower flower-3">🌼</div>
-    <div class="flower flower-4">🌷</div>
-
-    <div class="butterfly butterfly-1">🦋</div>
-    <div class="butterfly butterfly-2">🦋</div>
-    <div class="butterfly butterfly-3">🦋</div>
-
-    <div class="bird bird-1">🐦</div>
-    <div class="bird bird-2">🐦</div>
-
-    <div class="leaf leaf-1">🍃</div>
-    <div class="leaf leaf-2">🍃</div>
-    <div class="leaf leaf-3">🍃</div>
-
     """,
     unsafe_allow_html=True,
 )
 
-# --- CONTENU PRINCIPAL ---
-st.markdown('<div class="main-content">', unsafe_allow_html=True)
-
-# HEADER
+# --- EN-TETE ---
 st.markdown(
     """
-    <div class="ecosort-header-panel">
-        <div class="ecosort-titre-wrapper">
-            <svg class="ecosort-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                <path d="M12 2v4M12 22v-4M4 12H2M22 12h-2M4 4l2 2M20 20l-2-2M4 20l2-2M20 4l-2 2" />
-                <path d="M12 6a6 6 0 0 0-6 6 6 6 0 0 0 6 6 6 6 0 0 0 6-6 6 6 0 0 0-6-6z" />
-            </svg>
-            <div class="ecosort-titre">EcoSort-Search</div>
-        </div>
-        <div class="ecosort-soustitre">
-            <span>Recherchez, choisissez, triez</span>
-        </div>
+    <div class="eco-header">
+        <span class="eco-eyebrow">&#9851; Tri selectif assiste</span>
+        <h1 class="eco-title">EcoSort<span class="accent">-Search</span></h1>
+        <p class="eco-subtitle">Cherchez un produit, choisissez-le, obtenez sa consigne de tri.</p>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-# --- Barre de recherche courte et centrée ---
-st.markdown('<div class="search-container">', unsafe_allow_html=True)
+# --- BARRE DE RECHERCHE ---
 with st.form("formulaire_recherche", border=False):
-    mot_cle = st.text_input(
-        "Recherche",
-        placeholder="Que souhaitez-vous trier ?",
-        label_visibility="collapsed",
-    )
-    lancer_recherche = st.form_submit_button("Rechercher")
-st.markdown('</div>', unsafe_allow_html=True)
+    col_champ, col_bouton = st.columns([4, 1])
+    with col_champ:
+        mot_cle = st.text_input(
+            "Recherche",
+            placeholder="Ex. : bouteille, cahier, chargeur, montre...",
+            label_visibility="collapsed",
+        )
+    with col_bouton:
+        lancer_recherche = st.form_submit_button("Rechercher")
 
-# --- Logique de recherche ---
+# --- LOGIQUE DE RECHERCHE ---
 if lancer_recherche and mot_cle.strip():
     try:
         with st.spinner("Recherche en cours..."):
-            statut_recherche, donnees_recherche = rechercher_produits_api(mot_cle.strip(), max_results=6)
+            statut_recherche, donnees_recherche = rechercher_produits_api(
+                mot_cle.strip(), max_results=6
+            )
     except requests.exceptions.ConnectionError:
-        st.error("Le service de recherche est momentanément indisponible. Réessayez dans un instant.")
+        st.error(
+            "Le service de recherche est momentanement indisponible. "
+            "Reessayez dans un instant."
+        )
         st.stop()
     except requests.exceptions.Timeout:
-        st.error("La recherche prend trop de temps. Réessayez dans un instant.")
+        st.error("La recherche prend trop de temps. Reessayez dans un instant.")
         st.stop()
 
     if statut_recherche == 200:
@@ -648,19 +531,144 @@ if lancer_recherche and mot_cle.strip():
         st.session_state.pop("resultat_classification", None)
         st.session_state.pop("show_waiting", None)
     elif statut_recherche == 503:
-        st.warning("⚠️ Jumia demande une vérification de sécurité. Attendez puis réessayez.")
+        st.warning(
+            "Jumia demande une verification de securite. "
+            "Patientez quelques instants puis relancez la recherche."
+        )
     else:
-        st.error(f"❌ Erreur lors de la recherche (code {statut_recherche})")
+        st.error(f"La recherche a echoue (code {statut_recherche}). Reessayez.")
 
-# --- Affichage des produits ---
+# --- SECTION : PRODUIT CHOISI + RESULTAT ---
+# Placee juste sous la barre de recherche (et avant la grille de resultats) pour
+# rester visible sans avoir a faire defiler la page une fois un produit choisi.
+if "produit_choisi" in st.session_state:
+    produit = st.session_state["produit_choisi"]
+
+    st.markdown('<div class="eco-section-label">Produit selectionne</div>', unsafe_allow_html=True)
+    col_img, col_info = st.columns([1, 3])
+    with col_img:
+        if produit.get("image"):
+            st.image(produit["image"], width=140)
+    with col_info:
+        st.markdown(
+            f'<div class="eco-selected-title">'
+            f'{html.escape(produit.get("titre") or "Produit sans titre")}</div>'
+            f'<div class="eco-selected-price">'
+            f'{html.escape(produit.get("prix") or "Prix indisponible")}</div>',
+            unsafe_allow_html=True,
+        )
+
+    result_placeholder = st.empty()
+    image_produit = produit.get("image") or ""
+
+    if st.session_state.get("show_waiting", False):
+        result_placeholder.markdown(
+            f"""
+            <div class="eco-bin-waiting">
+                {scene_poubelle_html(image_produit)}
+                <div class="eco-waiting-text">Analyse du produit en cours...</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    if "resultat_classification" not in st.session_state:
+        if not produit.get("image"):
+            st.error("Aucune image disponible pour ce produit, impossible de l'analyser.")
+        else:
+            try:
+                statut_classification, donnees_classification = classifier_produit(
+                    produit.get("titre") or "",
+                    produit.get("categorie", ""),
+                    produit["image"],
+                )
+            except requests.exceptions.ConnectionError:
+                st.error(
+                    "Le service d'analyse est momentanement indisponible. "
+                    "Reessayez dans un instant."
+                )
+                st.stop()
+            except requests.exceptions.Timeout:
+                st.error("L'analyse prend trop de temps. Reessayez dans un instant.")
+                st.stop()
+            except requests.exceptions.RequestException as erreur:
+                st.error(f"Impossible de recuperer l'image du produit : {erreur}")
+                st.stop()
+
+            if statut_classification == 200:
+                # On connait desormais la couleur de la bonne poubelle : on rejoue
+                # l'animation avec cette couleur et on la maintient un instant avant
+                # de reveler la consigne, meme si l'API a repondu tres vite.
+                couleur_trouvee = donnees_classification["couleur"]
+                result_placeholder.markdown(
+                    f"""
+                    <div class="eco-bin-waiting">
+                        {scene_poubelle_html(image_produit, couleur_trouvee)}
+                        <div class="eco-waiting-text">Tri en cours...</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                time.sleep(DUREE_MIN_ANIMATION_POUBELLE)
+                st.session_state["resultat_classification"] = donnees_classification
+                st.session_state["show_waiting"] = False
+                st.rerun()
+            else:
+                st.error(
+                    f"L'analyse a echoue (code {statut_classification}). Reessayez."
+                )
+                st.session_state["show_waiting"] = False
+
+    if "resultat_classification" in st.session_state:
+        resultat = st.session_state["resultat_classification"]
+        couleur = resultat["couleur"]
+        poubelle = resultat["poubelle"]
+
+        infos = CONSIGNES_POUBELLE.get(
+            poubelle,
+            {
+                "nom": f"Poubelle {poubelle}",
+                "sous_titre": "",
+                "consigne": "",
+            },
+        )
+        texte_couleur = TEXTE_SUR_COULEUR.get(poubelle, "#ffffff")
+
+        # Ligne technique discrete : utile a l'evaluation, secondaire pour l'usager.
+        if resultat.get("classe"):
+            meta = (
+                f"Analyse : matiere &laquo; {html.escape(str(resultat['classe']))} &raquo; "
+                f"reconnue par le modele (confiance {resultat['confiance']:.0%})."
+            )
+        else:
+            meta = "Analyse : categorie determinee a partir du type de produit."
+
+        result_placeholder.empty()
+        with result_placeholder.container():
+            st.markdown(
+                f"""
+                <div class="eco-result" style="background:{couleur}; color:{texte_couleur};">
+                    <span class="eco-result-badge">Consigne de tri</span>
+                    <h2 class="eco-result-title">{html.escape(infos['nom'])}</h2>
+                    <div class="eco-result-subtitle">{html.escape(infos['sous_titre'])}</div>
+                    <div class="eco-result-consigne">{html.escape(infos['consigne'])}</div>
+                    <div class="eco-result-meta">{meta}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("<hr>", unsafe_allow_html=True)
+
+# --- AFFICHAGE DES PRODUITS ---
 if "produits" in st.session_state:
     produits = st.session_state["produits"]
     nb_colonnes = 3
 
     if not produits:
-        st.warning(
-            "Aucun produit n'a ete trouve pour cette recherche. "
-            "Essayez un mot-cle plus simple comme bouteille, calculatrice ou cahier."
+        st.info(
+            "Aucun produit trouve pour cette recherche. "
+            "Essayez un mot-cle plus simple, comme bouteille, calculatrice ou cahier."
         )
         st.stop()
 
@@ -678,9 +686,9 @@ if "produits" in st.session_state:
                 with st.container(border=True):
                     if produit.get("image"):
                         st.markdown(
-                            f'<div class="ecosort-carte-image-wrap">'
-                            f'<img class="ecosort-carte-image" '
-                            f'loading="lazy" src="{html.escape(produit["image"], quote=True)}"></div>',
+                            f'<div class="eco-card-image">'
+                            f'<img loading="lazy" '
+                            f'src="{html.escape(produit["image"], quote=True)}"></div>',
                             unsafe_allow_html=True,
                         )
 
@@ -688,114 +696,26 @@ if "produits" in st.session_state:
                     prix = html.escape(produit.get("prix") or "Prix indisponible")
                     st.markdown(
                         f"""
-                        <div class="ecosort-carte-corps">
-                            <div class="ecosort-carte-titre">{titre}</div>
-                            <div class="ecosort-carte-prix">{prix}</div>
+                        <div class="eco-card-body">
+                            <div class="eco-card-title">{titre}</div>
+                            <div class="eco-card-price">{prix}</div>
                         </div>
                         """,
                         unsafe_allow_html=True,
                     )
 
-                    if st.button("Choisir", key=f"choisir_{index}", width="stretch"):
+                    if st.button("Choisir ce produit", key=f"choisir_{index}", width="stretch"):
                         st.session_state["produit_choisi"] = produit
                         st.session_state.pop("resultat_classification", None)
                         st.session_state["show_waiting"] = True
                         st.rerun()
 
-# --- Section : produit choisi + résultat ---
-if "produit_choisi" in st.session_state:
-    produit = st.session_state["produit_choisi"]
-
-    st.markdown("---")
-    st.markdown("### Produit sélectionné")
-    col_img, col_info = st.columns([1, 2])
-    with col_img:
-        if produit.get("image"):
-            st.image(produit["image"], width=200)
-    with col_info:
-        st.markdown(f"**{produit.get('titre') or 'Produit sans titre'}**")
-        st.markdown(f"*{produit.get('prix') or 'Prix indisponible'}*")
-
-    result_placeholder = st.empty()
-
-    if st.session_state.get("show_waiting", False):
-        result_placeholder.markdown(
-            '<div class="waiting-message">⏳ Analyse en cours, la poubelle arrive...</div>',
-            unsafe_allow_html=True,
-        )
-
-    if "resultat_classification" not in st.session_state:
-        if not produit.get("image"):
-            st.error("❌ Aucune image disponible pour ce produit.")
-        else:
-            try:
-                statut_classification, donnees_classification = classifier_produit(
-                    produit.get("titre") or "",
-                    produit.get("categorie", ""),
-                    produit["image"],
-                )
-            except requests.exceptions.ConnectionError:
-                st.error("Le service de classification est momentanément indisponible. Réessayez dans un instant.")
-                st.stop()
-            except requests.exceptions.Timeout:
-                st.error("La classification prend trop de temps. Réessayez dans un instant.")
-                st.stop()
-            except requests.exceptions.RequestException as erreur:
-                st.error(f"Impossible de récupérer l'image du produit : {erreur}")
-                st.stop()
-
-            if statut_classification == 200:
-                st.session_state["resultat_classification"] = donnees_classification
-                st.session_state["show_waiting"] = False
-                st.rerun()
-            else:
-                st.error(f"❌ Erreur lors de la classification (code {statut_classification})")
-                st.session_state["show_waiting"] = False
-
-    if "resultat_classification" in st.session_state:
-        resultat = st.session_state["resultat_classification"]
-        couleur = resultat["couleur"]
-
-        result_placeholder.empty()
-        with result_placeholder.container():
-            st.markdown(
-                f"""
-                <div class="ecosort-poubelle-outer">
-                    <div class="ecosort-poubelle-anim">
-                        <div class="ecosort-dechet"></div>
-                        <svg viewBox="0 0 100 110" width="250" height="280">
-                            <rect x="33" y="0" width="34" height="9" rx="2" fill="{couleur}" />
-                            <rect x="17" y="9" width="66" height="14" rx="3" fill="{couleur}" />
-                            <path d="M 22 26 L 30 102 Q 31 108 39 108 L 61 108 Q 69 108 70 102 L 78 26 Z"
-                                  fill="{couleur}" opacity="0.9" />
-                            <line x1="38" y1="38" x2="40" y2="98" stroke="white" stroke-opacity="0.25" stroke-width="2.5"/>
-                            <line x1="50" y1="38" x2="50" y2="98" stroke="white" stroke-opacity="0.25" stroke-width="2.5"/>
-                            <line x1="62" y1="38" x2="60" y2="98" stroke="white" stroke-opacity="0.25" stroke-width="2.5"/>
-                        </svg>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            st.markdown(
-                f'<div style="margin-top: 40px; font-weight: 600; font-size: 1.2rem; color: #F2F5F3; text-shadow: 0 2px 8px rgba(0,0,0,0.5);">{html.escape(produit.get("titre") or "Produit sans titre")}</div>',
-                unsafe_allow_html=True,
-            )
-
-            if resultat["classe"]:
-                detail = f"Détecté par le modèle : {resultat['classe']} (confiance {resultat['confiance']:.0%})"
-            else:
-                detail = "Détecté via la catégorie ou le nom du produit"
-
-            st.markdown(
-                f"""
-                <div class="ecosort-resultat-poubelle" style="background-color:{couleur};">
-                    <div class="ecosort-resultat-titre">♻️ Poubelle {resultat['poubelle']}</div>
-                    <div class="ecosort-resultat-detail">{detail}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-st.markdown('</div>', unsafe_allow_html=True)
+                    lien_produit = produit.get("lien")
+                    if lien_produit:
+                        st.markdown(
+                            f'<a class="eco-jumia-link" '
+                            f'href="{html.escape(lien_produit, quote=True)}" '
+                            f'target="_blank" rel="noopener noreferrer">'
+                            f'Voir sur Jumia &#8599;</a>',
+                            unsafe_allow_html=True,
+                        )
